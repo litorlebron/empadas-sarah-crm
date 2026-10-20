@@ -576,7 +576,9 @@ tbody tr:hover { background: var(--pink-50); }
 }
 
 /* ─── RESPONSIVIDADE ─────────────────────────────────────────── */
-@media (max-width: 1024px) {
+/* Tablet (769–1024px): sidebar recolhida só com ícones.
+   Limitado a min-width 769px para NÃO afetar o menu gaveta do celular. */
+@media (min-width: 769px) and (max-width: 1024px) {
   :root { --sidebar-width: var(--sidebar-collapsed); }
   .sidebar-brand, .sidebar-user-name, .sidebar-user-role,
   .nav-item span, .sidebar-signout span, .sidebar-header-icon + div { display: none; }
@@ -584,6 +586,9 @@ tbody tr:hover { background: var(--pink-50); }
   .sidebar-signout { justify-content: center; padding: 8px; }
   .sidebar-user { display: none; }
   .sidebar-header { justify-content: center; }
+}
+
+@media (max-width: 1024px) {
   .page-body { padding: var(--space-5); }
   .page-header { padding: var(--space-4) var(--space-5); }
 }
@@ -817,9 +822,24 @@ tbody tr:hover { background: var(--pink-50); }
     overflow: hidden;
   }
   .sidebar.mobile-open {
-    width: 220px !important;
+    width: min(260px, 82vw) !important;
     transform: translateX(0);
+    box-shadow: 4px 0 24px rgba(0,0,0,.3);
   }
+  .sidebar { z-index: 1000; }
+  .sidebar-overlay { z-index: 999; }
+  .mobile-topbar { z-index: 98; }
+
+  /* Garante rótulos e usuário visíveis na gaveta mobile */
+  .sidebar-brand,
+  .sidebar-user-name,
+  .sidebar-user-role,
+  .nav-item span,
+  .sidebar-signout span { display: initial; }
+  .sidebar-user { display: block; }
+  .nav-item { justify-content: flex-start; }
+  .sidebar-signout { justify-content: flex-start; }
+  .sidebar-header { justify-content: flex-start; }
 
   /* Itens do menu mobile menores */
   .sidebar-header {
