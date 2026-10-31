@@ -150,7 +150,7 @@ function renderTotals(sales, expenses) {
     card('Pendente', formatBRL(tp), 'var(--warning)') +
     card('Despesas', formatBRL(td), 'var(--danger)') +
     card('Resultado', formatBRL(re), re>=0?'var(--success)':'var(--danger)') +
-    card('Vendas', sales.length) +
+    card('Vendas', countOrders(sales)) +
     card('Bandejas', bd) +
     '</div></div>';
 }
@@ -158,10 +158,10 @@ function renderTotals(sales, expenses) {
 function renderByClient(sales) {
   var byClient = {};
   sales.forEach(function(s) {
-    if (!byClient[s.client_name]) byClient[s.client_name] = {total:0,recebido:0,qty:0,bandejas:0};
+    if (!byClient[s.client_name]) byClient[s.client_name] = {total:0,recebido:0,qty:0,bandejas:0,_o:{}};
     byClient[s.client_name].total    += Number(s.amount||0);
     if (s.payment_status==='pago') byClient[s.client_name].recebido += Number(s.amount||0);
-    byClient[s.client_name].qty++;
+    if (!byClient[s.client_name]._o[s.order_id || s.id]) { byClient[s.client_name]._o[s.order_id || s.id] = 1; byClient[s.client_name].qty++; }
     byClient[s.client_name].bandejas += (s.quantity||0);
   });
   var sorted = Object.entries(byClient).sort(function(a,b){return b[1].total-a[1].total;});
@@ -224,10 +224,10 @@ function renderByFlavor(sales) {
 function renderBySeller(sales) {
   var bySeller = {};
   sales.forEach(function(s) {
-    if (!bySeller[s.seller_name]) bySeller[s.seller_name] = {total:0,recebido:0,qty:0,bandejas:0};
+    if (!bySeller[s.seller_name]) bySeller[s.seller_name] = {total:0,recebido:0,qty:0,bandejas:0,_o:{}};
     bySeller[s.seller_name].total    += Number(s.amount||0);
     if (s.payment_status==='pago') bySeller[s.seller_name].recebido += Number(s.amount||0);
-    bySeller[s.seller_name].qty++;
+    if (!bySeller[s.seller_name]._o[s.order_id || s.id]) { bySeller[s.seller_name]._o[s.order_id || s.id] = 1; bySeller[s.seller_name].qty++; }
     bySeller[s.seller_name].bandejas += (s.quantity||0);
   });
   var sorted = Object.entries(bySeller).sort(function(a,b){return b[1].total-a[1].total;});
@@ -313,3 +313,10 @@ function printReport() {
   hdr.style.display = 'none';
 }
 
+// Conta vendas (pedidos): linhas com o mesmo order_id contam como 1.
+// Vendas antigas, sem order_id, contam cada uma como 1.
+function countOrders(sales) {
+  var seen = {};
+  sales.forEach(function(s) { seen[s.order_id || s.id] = true; });
+  return Object.keys(seen).length;
+}

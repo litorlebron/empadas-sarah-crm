@@ -18,6 +18,15 @@ export async function render(container) {
 
 function buildLayout() {
   return `
+  <style>
+    .sale-item { border:1px solid var(--border); border-radius:var(--radius-md); padding:var(--space-3); margin-bottom:var(--space-3); background:var(--surface); }
+    .sale-item-row { display:grid; grid-template-columns:1fr 1fr auto; gap:var(--space-3); align-items:end; margin-top:var(--space-3); }
+    .sale-item label.mini { display:block; font-size:11px; color:var(--text-secondary); margin-bottom:4px; }
+    .sale-item select, .sale-item input { width:100%; }
+    .sale-item-remove { background:none; border:none; color:var(--danger); font-size:22px; line-height:1; cursor:pointer; padding:6px 8px; }
+    .sale-total-box { display:flex; justify-content:space-between; align-items:center; padding:var(--space-3) var(--space-4); border-radius:var(--radius-md); background:var(--pink-50); color:var(--brand-800); margin-bottom:var(--space-3); }
+    .sale-total-box strong { font-size:20px; }
+  </style>
   <div class="page-header">
     <div><h1>Vendas</h1></div>
     <div class="page-actions no-print">
@@ -66,26 +75,21 @@ function buildLayout() {
           </div>
         </div>
         <div class="field">
-          <label>Sabor <span style="color:var(--danger)">*</span></label>
-          <div class="autocomplete-wrap">
-            <input type="text" id="saleFlavorSearch" placeholder="Digite para pesquisar..." autocomplete="off" oninput="filterFlavors()" />
-            <div class="autocomplete-dropdown" id="flavorDropdown" style="display:none"></div>
-            <input type="hidden" id="saleFlavorId" />
-          </div>
+          <label>Data <span style="color:var(--danger)">*</span></label>
+          <input type="date" id="saleDate" />
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--space-4)">
-          <div class="field">
-            <label>Data <span style="color:var(--danger)">*</span></label>
-            <input type="date" id="saleDate" />
-          </div>
-          <div class="field">
-            <label>Bandejas <span style="color:var(--danger)">*</span></label>
-            <input type="number" id="saleQty" min="1" placeholder="0" />
-          </div>
-        </div>
+
         <div class="field">
-          <label>Valor (R$) <span style="color:var(--danger)">*</span></label>
-          <input type="text" id="saleAmount" placeholder="0,00" oninput="maskBRL(this)" inputmode="decimal" />
+          <label>Sabores <span style="color:var(--danger)">*</span></label>
+          <div id="saleItemsWrap"></div>
+          <button type="button" class="btn btn-secondary btn-sm" id="addSaleItemBtn" onclick="addSaleItem()" style="margin-top:var(--space-2)">
+            + Adicionar sabor
+          </button>
+        </div>
+
+        <div class="sale-total-box">
+          <span>Valor total</span>
+          <strong id="saleTotal">R$ 0,00</strong>
         </div>
         <p id="saleFormError" style="color:var(--danger);font-size:13px;display:none;margin-top:-8px;margin-bottom:8px"></p>
       </div>
@@ -132,13 +136,14 @@ function attachListeners() {
   window.openSaleModal    = openSaleModal;
   window.closeSaleModal   = closeSaleModal;
   window.filterClients    = filterClients;
-  window.filterFlavors    = filterFlavors;
   window.saveSale         = saveSale;
   window.editSale         = editSale;
   window.deleteSaleRow    = deleteSaleRow;
   window.maskBRL          = maskBRL;
   window.selectClient     = selectClient;
-  window.selectFlavor     = selectFlavor;
+  window.addSaleItem      = addSaleItem;
+  window.removeSaleItem   = removeSaleItem;
+  window.updateSaleItem   = updateSaleItem;
 
   document.addEventListener('click', function(e) {
     if (!e.target.closest('.autocomplete-wrap')) {
@@ -201,21 +206,89 @@ function renderTable(sales) {
 
 function esc(s) { return String(s).replace(/'/g,"\\'"); }
 
+var saleItems = [], nextItemUid = 1, currentOrderId = null;
+
+function newOrderId() {
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    var r = Math.random()*16|0, v = c === 'x' ? r : (r&0x3|0x8); return v.toString(16);
+  });
+}
+
+function newItem(flavorId, qty, amount) {
+  return { uid: nextItemUid++, flavorId: flavorId || '', qty: qty || '', amount: amount ? Number(amount).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}) : '' };
+}
+
 function openSaleModal(id, clientName, clientId, flavorName, flavorId, date, qty, amount) {
   editingId = id || null;
   document.getElementById('saleModalTitle').textContent = editingId ? 'Editar Venda' : 'Nova Venda';
   document.getElementById('saleClientSearch').value = clientName || '';
   document.getElementById('saleClientId').value     = clientId  || '';
-  document.getElementById('saleFlavorSearch').value = flavorName || '';
-  document.getElementById('saleFlavorId').value     = flavorId  || '';
   document.getElementById('saleDate').value         = date || todayISO();
-  document.getElementById('saleQty').value          = qty  || '';
-  document.getElementById('saleAmount').value       = amount ? Number(amount).toLocaleString('pt-BR',{minimumFractionDigits:2}) : '';
+  saleItems = [ editingId ? newItem(flavorId, qty, amount) : newItem() ];
+  currentOrderId = editingId ? null : newOrderId();
+  document.getElementById('addSaleItemBtn').style.display = editingId ? 'none' : '';
   document.getElementById('saleFormError').style.display = 'none';
+  renderSaleItems();
   openModal('saleModal');
 }
 
 function closeSaleModal() { closeModal('saleModal'); editingId = null; }
+
+function renderSaleItems() {
+  var options = '<option value="">Selecione o sabor...</option>' + allFlavors
+    .slice().sort(function(a,b){ return a.name.localeCompare(b.name, 'pt-BR'); })
+    .map(function(f){ return '<option value="' + f.id + '">' + f.name + '</option>'; }).join('');
+
+  document.getElementById('saleItemsWrap').innerHTML = saleItems.map(function(it) {
+    var canRemove = !editingId && saleItems.length > 1;
+    return '<div class="sale-item">' +
+      '<label class="mini">Sabor</label>' +
+      '<select onchange="updateSaleItem(' + it.uid + ',\'flavorId\',this.value)">' +
+        options.replace('value="' + it.flavorId + '"', 'value="' + it.flavorId + '" selected') +
+      '</select>' +
+      '<div class="sale-item-row">' +
+        '<div><label class="mini">Bandejas</label>' +
+          '<input type="number" min="1" inputmode="numeric" placeholder="0" value="' + it.qty + '" oninput="updateSaleItem(' + it.uid + ',\'qty\',this.value)" /></div>' +
+        '<div><label class="mini">Valor (R$)</label>' +
+          '<input type="text" inputmode="decimal" placeholder="0,00" value="' + it.amount + '" oninput="maskBRL(this);updateSaleItem(' + it.uid + ',\'amount\',this.value)" /></div>' +
+        (canRemove ? '<button type="button" class="sale-item-remove" title="Remover sabor" onclick="removeSaleItem(' + it.uid + ')">&times;</button>' : '<span></span>') +
+      '</div>' +
+    '</div>';
+  }).join('');
+  updateSaleTotal();
+}
+
+function addSaleItem() {
+  saleItems.push(newItem());
+  renderSaleItems();
+  var wrap = document.getElementById('saleItemsWrap');
+  var last = wrap.lastElementChild;
+  if (last && last.scrollIntoView) last.scrollIntoView({ block: 'nearest' });
+}
+
+function removeSaleItem(uid) {
+  if (saleItems.length <= 1) return;
+  saleItems = saleItems.filter(function(i){ return i.uid !== uid; });
+  renderSaleItems();
+}
+
+function updateSaleItem(uid, field, value) {
+  var it = saleItems.find(function(i){ return i.uid === uid; });
+  if (!it) return;
+  it[field] = value;
+  updateSaleTotal();
+}
+
+function saleTotalValue() {
+  var total = saleItems.reduce(function(sum, it){ return sum + parseBRL(it.amount); }, 0);
+  return Math.round(total * 100) / 100;
+}
+
+function updateSaleTotal() {
+  var el = document.getElementById('saleTotal');
+  if (el) el.textContent = formatBRL(saleTotalValue());
+}
 
 function editSale(id, clientName, clientId, flavorName, flavorId, date, qty, amount) {
   openSaleModal(id, clientName.replace(/\\'/g,"'"), clientId, flavorName.replace(/\\'/g,"'"), flavorId, date, qty, amount);
@@ -250,25 +323,6 @@ function selectClient(id, name) {
   document.getElementById('clientDropdown').style.display = 'none';
 }
 
-function filterFlavors() {
-  var term = document.getElementById('saleFlavorSearch').value.toLowerCase();
-  var drop = document.getElementById('flavorDropdown');
-  document.getElementById('saleFlavorId').value = '';
-  if (!term) { drop.style.display = 'none'; return; }
-  var filtered = allFlavors.filter(function(f){ return f.name.toLowerCase().includes(term); }).slice(0,8);
-  if (!filtered.length) { drop.style.display = 'none'; return; }
-  drop.innerHTML = filtered.map(function(f) {
-    return '<div class="autocomplete-item" onclick="selectFlavor(\'' + f.id + '\',\'' + esc(f.name) + '\')">' + f.name + '</div>';
-  }).join('');
-  drop.style.display = 'block';
-}
-
-function selectFlavor(id, name) {
-  document.getElementById('saleFlavorSearch').value = name.replace(/\\'/g,"'");
-  document.getElementById('saleFlavorId').value     = id;
-  document.getElementById('flavorDropdown').style.display = 'none';
-}
-
 function maskBRL(input) {
   var v = input.value.replace(/\D/g,'');
   v = (parseInt(v,10)||0) / 100;
@@ -280,39 +334,60 @@ async function saveSale() {
   if (isSubmitting) return;
   var errEl = document.getElementById('saleFormError');
   errEl.style.display = 'none';
+  function fail(msg) { errEl.textContent = msg; errEl.style.display = 'block'; }
 
   var clientId = document.getElementById('saleClientId').value;
-  var flavorId = document.getElementById('saleFlavorId').value;
   var saleDate = document.getElementById('saleDate').value;
-  var qty      = parseInt(document.getElementById('saleQty').value, 10);
-  var amount   = parseBRL(document.getElementById('saleAmount').value);
 
-  if (!clientId) { errEl.textContent='Selecione um cliente.'; errEl.style.display='block'; return; }
-  if (!flavorId) { errEl.textContent='Selecione um sabor.'; errEl.style.display='block'; return; }
-  if (!saleDate) { errEl.textContent='Informe a data.'; errEl.style.display='block'; return; }
-  if (!qty||qty<=0) { errEl.textContent='Informe a quantidade.'; errEl.style.display='block'; return; }
-  if (!amount||amount<=0) { errEl.textContent='Informe o valor.'; errEl.style.display='block'; return; }
+  if (!clientId) return fail('Selecione um cliente.');
+  if (!saleDate) return fail('Informe a data.');
+
+  var seen = {};
+  for (var i = 0; i < saleItems.length; i++) {
+    var it = saleItems[i], n = i + 1;
+    var qty = parseInt(it.qty, 10), amount = parseBRL(it.amount);
+    if (!it.flavorId)         return fail('Selecione o sabor da linha ' + n + '.');
+    if (seen[it.flavorId])    return fail('O mesmo sabor foi escolhido mais de uma vez. Some as bandejas em uma só linha.');
+    if (!qty || qty <= 0)     return fail('Informe as bandejas da linha ' + n + '.');
+    if (!amount || amount <= 0) return fail('Informe o valor da linha ' + n + '.');
+    seen[it.flavorId] = true;
+  }
 
   isSubmitting = true;
   var btn = document.getElementById('saveSaleBtn');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span> Salvando...';
 
+  var total = saleItems.length, saved = 0;
   try {
-    var payload = { client_id:clientId, flavor_id:flavorId, sale_date:saleDate, quantity:qty, amount:amount };
     if (editingId) {
-      await updateSale(editingId, payload);
+      var one = saleItems[0];
+      await updateSale(editingId, { client_id:clientId, flavor_id:one.flavorId, sale_date:saleDate, quantity:parseInt(one.qty,10), amount:parseBRL(one.amount) });
       showToast('Venda atualizada com sucesso.', 'success');
     } else {
-      await createSale(payload);
-      showToast('Venda registrada com sucesso.', 'success');
+      // Cada sabor vira um registro em "sales" (mesmo cliente, data e vendedor),
+      // assim relatórios e dashboards por sabor continuam funcionando.
+      var pending = saleItems.slice();
+      for (var k = 0; k < pending.length; k++) {
+        var p = pending[k];
+        await createSale({ client_id:clientId, flavor_id:p.flavorId, sale_date:saleDate, quantity:parseInt(p.qty,10), amount:parseBRL(p.amount), order_id:currentOrderId });
+        saved++;
+      }
+      showToast(total > 1 ? 'Venda registrada: ' + total + ' sabores, ' + formatBRL(saleTotalValue()) + '.' : 'Venda registrada com sucesso.', 'success');
     }
     closeSaleModal();
     loadSales();
   } catch(err) {
-    errEl.textContent = 'Nao foi possivel salvar a venda. Tente novamente.';
-    errEl.style.display = 'block';
     console.error(err);
+    if (!editingId && saved > 0) {
+      // remove da tela o que já foi salvo para não duplicar ao tentar de novo
+      saleItems = saleItems.slice(saved);
+      renderSaleItems();
+      loadSales();
+      fail('Foram salvos ' + saved + ' de ' + total + ' sabores. Confira os restantes e toque em Salvar novamente.');
+    } else {
+      fail('Nao foi possivel salvar a venda. Tente novamente.');
+    }
   } finally {
     isSubmitting = false;
     btn.disabled = false;

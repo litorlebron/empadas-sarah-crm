@@ -151,7 +151,7 @@ function renderKPIs(sales, expenses) {
   var totalBandejas = sales.reduce(function(s,v) { return s + (v.quantity||0); }, 0);
 
   document.getElementById('kpiGrid').innerHTML =
-    '<div class="kpi-card"><div class="kpi-label">Total Vendido</div><div class="kpi-value">' + formatBRL(totalVendido) + '</div><div class="kpi-sub">' + sales.length + ' vendas</div></div>' +
+    '<div class="kpi-card"><div class="kpi-label">Total Vendido</div><div class="kpi-value">' + formatBRL(totalVendido) + '</div><div class="kpi-sub">' + countOrders(sales) + ' vendas</div></div>' +
     '<div class="kpi-card"><div class="kpi-label">Recebido</div><div class="kpi-value green">' + formatBRL(totalRecebido) + '</div></div>' +
     '<div class="kpi-card"><div class="kpi-label">Pendente</div><div class="kpi-value amber">' + formatBRL(totalPendente) + '</div></div>' +
     '<div class="kpi-card"><div class="kpi-label">Despesas</div><div class="kpi-value red">' + formatBRL(totalDespesas) + '</div></div>' +
@@ -259,4 +259,12 @@ function renderDebtors(sales) {
   wrap.innerHTML = '<div>' + sorted.slice(0,8).map(function(e) {
     return '<div class="debtor-item"><span class="debtor-name">' + e[0] + '</span><span class="debtor-amount">' + formatBRL(e[1]) + '</span></div>';
   }).join('') + '</div>';
+}
+
+// Conta vendas (pedidos): linhas com o mesmo order_id contam como 1.
+// Vendas antigas, sem order_id, contam cada uma como 1.
+function countOrders(sales) {
+  var seen = {};
+  sales.forEach(function(s) { seen[s.order_id || s.id] = true; });
+  return Object.keys(seen).length;
 }

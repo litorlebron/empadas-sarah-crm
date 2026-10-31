@@ -109,7 +109,7 @@ async function loadDashboard() {
 }
 
 function renderKPIs(sales) {
-  var totalSales    = sales.length;
+  var totalSales    = countOrders(sales);
   var totalBandejas = sales.reduce(function(s,v){return s+(v.quantity||0);},0);
   var uniqueClients = new Set(sales.map(function(v){return v.client_id;})).size;
   document.getElementById('kpiGrid').innerHTML =
@@ -187,3 +187,10 @@ function renderLastSales(sales) {
     '<tbody>' + rows + '</tbody></table></div>';
 }
 
+// Conta vendas (pedidos): linhas com o mesmo order_id contam como 1.
+// Vendas antigas, sem order_id, contam cada uma como 1.
+function countOrders(sales) {
+  var seen = {};
+  sales.forEach(function(s) { seen[s.order_id || s.id] = true; });
+  return Object.keys(seen).length;
+}
