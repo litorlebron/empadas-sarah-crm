@@ -1,22 +1,39 @@
 /**
  * EMPADAS DA SARAH – CRM
- * Relatorios — mobile-friendly, nomes à esquerda
+ * Relatorios — relatório gerencial compacto (tela + impressão A4)
  */
 import { showToast, formatDate, formatBRL, todayISO } from '../js/app.js';
 import { getSalesAdminView, getExpenses } from '../js/db.js';
 
 var currentReportType = 0;
+var lastLoaded = { from: '', to: '', type: 0 };
+var printHooksBound = false;
+
+var REPORT_NAMES = ['Todos os Relatórios','Valores Totais','Por Cliente','Por Sabor','Por Vendedor','Pagamentos','Despesas'];
 
 export async function render(container) {
   container.innerHTML = buildLayout();
   setDefaultFilters();
   attachListeners();
+  bindPrintHooks();
   await loadReport();
 }
 
 function buildLayout() {
   return `
-  <div class="page-header">
+  <div class="rpt-root">
+  <div class="rpt-print-header">
+    <div class="rpt-ph-left">
+      <div class="rpt-ph-brand">Doces &amp; Empadas da Sarah</div>
+      <div class="rpt-ph-title">Relatório Gerencial</div>
+    </div>
+    <div class="rpt-ph-right">
+      <div class="rpt-ph-type" id="printSubtitle"></div>
+      <div id="printPeriod"></div>
+    </div>
+  </div>
+
+  <div class="page-header no-print">
     <div><h1>Relatorios</h1></div>
     <div class="page-actions no-print">
       <button class="btn btn-secondary" onclick="printReport()">
@@ -43,7 +60,7 @@ function buildLayout() {
     </div>
 
     <!-- Tipo de relatorio -->
-    <div style="display:flex;flex-wrap:wrap;gap:var(--space-2);margin-bottom:var(--space-4)" id="reportTypeBar">
+    <div class="no-print" style="display:flex;flex-wrap:wrap;gap:var(--space-2);margin-bottom:var(--space-4)" id="reportTypeBar">
       ${['Todos','Valores Totais','Por Cliente','Por Sabor','Por Vendedor','Pagamentos','Despesas'].map(function(t,i){
         return '<button class="btn btn-' + (i===0?'primary':'secondary') + ' btn-sm" data-rtype="' + i + '" onclick="setReportType(' + i + ')">' + t + '</button>';
       }).join('')}
@@ -52,12 +69,11 @@ function buildLayout() {
     <div id="reportContent"><div class="page-loading"><div class="spinner dark"></div></div></div>
   </div>
 
-  <div id="printHeader" class="print-header" style="display:none">
-    <h1>Doces &amp; Empadas da Sarah</h1>
-    <p id="printSubtitle">Relatorio</p>
-    <p id="printPeriod"></p>
-    <p>Gerado em: <span id="printDate"></span></p>
-    <hr style="margin:12px 0;border:1px solid #e2e6ea"/>
+  <div class="rpt-footer-inline">
+    <span>Doces &amp; Empadas da Sarah — CRM</span>
+    <span id="rptFootPeriod"></span>
+    <span id="rptFootDate"></span>
+  </div>
   </div>`;
 }
 
@@ -81,7 +97,7 @@ function attachListeners() {
     if (range==='today')  { df.value = dt.value = fmt(now); loadReport(); }
     else if (range==='week')  { var s=new Date(now); s.setDate(now.getDate()-6); df.value=fmt(s); dt.value=fmt(now); loadReport(); }
     else if (range==='month') { df.value=fmt(now).slice(0,8)+'01'; dt.value=fmt(now); loadReport(); }
-    else if (range==='year')  { df.value=fmt(now).slice(0,5)+'01-01'; dt.value=fmt(now); loadReport(); }
+    else if (range==='year')  { df.value=fmt(now).slice(0,5)+'01-01'; dt.value=fmt(now).slice(0,5)+'12-31'; loadReport(); }
     else if (range==='all')   { df.value='2020-01-01'; dt.value=fmt(now); loadReport(); }
     else { g.style.display='flex'; }
   };
@@ -107,11 +123,12 @@ async function loadReport() {
       getExpenses({ dateFrom: dateFrom, dateTo: dateTo })
     ]);
     var sales = results[0], expenses = results[1];
+    lastLoaded = { from: dateFrom, to: dateTo, type: currentReportType };
     var types = currentReportType === 0 ? [1,2,3,4,5,6] : [currentReportType];
     var html = '';
     types.forEach(function(t) {
       if (t===1) html += renderTotals(sales, expenses);
-      else if (t===2) html += renderByClient(sales);
+      else if (t===2) html += renderByClient(sales, currentReportType === 0);
       else if (t===3) html += renderByFlavor(sales);
       else if (t===4) html += renderBySeller(sales);
       else if (t===5) html += renderPayments(sales);
@@ -125,17 +142,39 @@ async function loadReport() {
   }
 }
 
-function card(label, value, color) {
-  return '<div style="background:var(--surface-2);border-radius:var(--radius-md);padding:var(--space-3) var(--space-4);border-left:3px solid var(--brand-500)">' +
-    '<div style="font-size:11px;color:var(--text-secondary);font-weight:700;text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px">' + label + '</div>' +
-    '<div style="font-size:20px;font-weight:700;color:' + (color||'var(--text-primary)') + '">' + value + '</div>' +
-  '</div>';
+// ── Helpers de apresentação ────────────────────────────────────
+function esc(v) {
+  return String(v == null ? '' : v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-function sectionTitle(t) {
-  return '<h3 style="font-size:14px;font-weight:700;color:var(--brand-800);padding-bottom:var(--space-3);border-bottom:2px solid var(--brand-100);margin-bottom:var(--space-4);margin-top:var(--space-6)">' + t + '</h3>';
+function sectionTitle(t) { return '<h3 class="rpt-h">' + t + '</h3>'; }
+function section(title, body, keep) {
+  return '<section class="rpt-section' + (keep ? ' rpt-keep' : '') + '">' + sectionTitle(title) + body + '</section>';
 }
 
+// Indicador compacto. tone: '' | 'pos' | 'pend' | 'neg'
+function kpi(label, value, tone) {
+  return '<div class="rpt-kpi' + (tone ? ' ' + tone : '') + '"><span class="rpt-kpi-l">' + label + '</span><span class="rpt-kpi-v">' + value + '</span></div>';
+}
+function kpis(html, cols) {
+  return '<div class="rpt-kpis" style="--rpt-cols:' + cols + '">' + html + '</div>';
+}
+
+// headers: [{t:'Cliente'}, {t:'Total', n:true}]  rows: array de arrays de HTML (ou {cells, total:true})
+function tbl(headers, rows) {
+  var th = headers.map(function(h) { return '<th' + (h.n ? ' class="n"' : '') + '>' + h.t + '</th>'; }).join('');
+  var tr = rows.map(function(r) {
+    var cells = r.cells || r;
+    return '<tr' + (r.total ? ' class="rpt-total"' : '') + '>' + cells.map(function(c, i) {
+      return '<td' + (headers[i] && headers[i].n ? ' class="n"' : '') + '>' + c + '</td>';
+    }).join('') + '</tr>';
+  }).join('');
+  return '<div class="rpt-scroll"><table class="rpt-table"><thead><tr>' + th + '</tr></thead><tbody>' + tr + '</tbody></table></div>';
+}
+
+function sumBy(list, fn) { return list.reduce(function(a, x) { return a + fn(x); }, 0); }
+
+// ── Seções ─────────────────────────────────────────────────────
 function renderTotals(sales, expenses) {
   var tv = sales.reduce(function(a,s){return a+Number(s.amount||0);},0);
   var tr = sales.filter(function(s){return s.payment_status==='pago';}).reduce(function(a,s){return a+Number(s.amount||0);},0);
@@ -143,19 +182,26 @@ function renderTotals(sales, expenses) {
   var td = expenses.reduce(function(a,e){return a+Number(e.amount||0);},0);
   var re = tr - td;
   var bd = sales.reduce(function(a,s){return a+(s.quantity||0);},0);
-  return '<div class="report-section">' + sectionTitle('Valores Totais') +
-    '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:var(--space-3)">' +
-    card('Total Vendido', formatBRL(tv)) +
-    card('Recebido', formatBRL(tr), 'var(--success)') +
-    card('Pendente', formatBRL(tp), 'var(--warning)') +
-    card('Despesas', formatBRL(td), 'var(--danger)') +
-    card('Resultado', formatBRL(re), re>=0?'var(--success)':'var(--danger)') +
-    card('Vendas', countOrders(sales)) +
-    card('Bandejas', bd) +
-    '</div></div>';
+  return section('Valores Totais', kpis(
+    kpi('Total Vendido', formatBRL(tv)) +
+    kpi('Recebido', formatBRL(tr), 'pos') +
+    kpi('Pendente', formatBRL(tp), 'pend') +
+    kpi('Despesas', formatBRL(td), 'neg') +
+    kpi('Resultado', formatBRL(re), re>=0?'pos':'neg') +
+    kpi('Vendas', countOrders(sales)) +
+    kpi('Bandejas', bd), 7), true);
 }
 
-function renderByClient(sales) {
+function pendingTable(pendSales) {
+  var total = sumBy(pendSales, function(s){ return Number(s.amount||0); });
+  var rows = pendSales.map(function(s) {
+    return [esc(s.client_name), formatDate(s.sale_date), esc(s.flavor_name), s.quantity + ' bdj.', formatBRL(s.amount)];
+  });
+  rows.push({ total: true, cells: ['TOTAL PENDENTE (' + pendSales.length + ')', '', '', sumBy(pendSales, function(s){return s.quantity||0;}) + ' bdj.', formatBRL(total)] });
+  return tbl([{t:'Cliente'},{t:'Data'},{t:'Produto'},{t:'Qtd.',n:true},{t:'Valor',n:true}], rows);
+}
+
+function renderByClient(sales, skipPending) {
   var byClient = {};
   sales.forEach(function(s) {
     if (!byClient[s.client_name]) byClient[s.client_name] = {total:0,recebido:0,qty:0,bandejas:0,_o:{}};
@@ -166,32 +212,28 @@ function renderByClient(sales) {
   });
   var sorted = Object.entries(byClient).sort(function(a,b){return b[1].total-a[1].total;});
 
-  var cards = sorted.map(function(e) {
-    var name = e[0], d = e[1];
-    var pend = d.total - d.recebido;
-    return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-4);box-shadow:var(--shadow-sm);margin-bottom:var(--space-3)">' +
-      '<div style="font-size:15px;font-weight:700;color:var(--brand-800);margin-bottom:var(--space-3)">' + name + '</div>' +
-      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--space-2)">' +
-        '<div><div style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--text-tertiary)">Compras</div><div style="font-weight:700">' + d.qty + '</div></div>' +
-        '<div><div style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--text-tertiary)">Bandejas</div><div style="font-weight:700">' + d.bandejas + '</div></div>' +
-        '<div><div style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--text-tertiary)">Total</div><div style="font-weight:700">' + formatBRL(d.total) + '</div></div>' +
-        '<div><div style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--text-tertiary)">Pago</div><div style="font-weight:700;color:var(--success)">' + formatBRL(d.recebido) + '</div></div>' +
-      '</div>' +
-      (pend > 0 ? '<div style="margin-top:var(--space-3);padding:var(--space-2) var(--space-3);background:var(--warning-bg);border-radius:var(--radius-sm);font-size:13px;color:var(--warning);font-weight:700">Pendente: ' + formatBRL(pend) + '</div>' : '') +
-    '</div>';
-  }).join('');
+  var rows = sorted.map(function(e) {
+    var d = e[1], pend = d.total - d.recebido;
+    return [esc(e[0]), d.qty, d.bandejas, formatBRL(d.total),
+      '<span class="pos">' + formatBRL(d.recebido) + '</span>',
+      pend > 0 ? '<span class="pend">' + formatBRL(pend) + '</span>' : '—'];
+  });
+  var T = {
+    qty: sumBy(sorted, function(e){return e[1].qty;}), bdj: sumBy(sorted, function(e){return e[1].bandejas;}),
+    total: sumBy(sorted, function(e){return e[1].total;}), rec: sumBy(sorted, function(e){return e[1].recebido;})
+  };
+  rows.push({ total: true, cells: ['TOTAL GERAL', T.qty, T.bdj, formatBRL(T.total),
+    '<span class="pos">' + formatBRL(T.rec) + '</span>', '<span class="pend">' + formatBRL(T.total - T.rec) + '</span>'] });
 
+  var main = section('Por Cliente',
+    tbl([{t:'Cliente'},{t:'Compras',n:true},{t:'Bandejas',n:true},{t:'Total',n:true},{t:'Pago',n:true},{t:'Pendente',n:true}], rows),
+    rows.length <= 12);
+
+  // Em "Todos" as pendências já aparecem na seção Pagamentos (evita repetir a mesma lista)
   var pendSales = sales.filter(function(s){return s.payment_status==='pendente';});
-  var pendList = pendSales.length ? sectionTitle('Clientes com Pendencias') +
-    '<div style="display:flex;flex-direction:column;gap:var(--space-3)">' +
-    pendSales.map(function(s) {
-      return '<div style="background:var(--warning-bg);border:1px solid rgba(180,83,9,.15);border-radius:var(--radius-md);padding:var(--space-3) var(--space-4)">' +
-        '<div style="font-size:14px;font-weight:700;color:var(--text-primary);margin-bottom:4px">' + s.client_name + '</div>' +
-        '<div style="font-size:12px;color:var(--text-secondary)">' + formatDate(s.sale_date) + ' &bull; ' + s.flavor_name + ' &bull; ' + s.quantity + ' bdj. &bull; <strong>' + formatBRL(s.amount) + '</strong></div>' +
-      '</div>';
-    }).join('') + '</div>' : '';
-
-  return '<div class="report-section">' + sectionTitle('Por Cliente') + cards + pendList + '</div>';
+  var pendList = (!skipPending && pendSales.length)
+    ? section('Clientes com Pendências', pendingTable(pendSales), pendSales.length <= 12) : '';
+  return main + pendList;
 }
 
 function renderByFlavor(sales) {
@@ -206,19 +248,19 @@ function renderByFlavor(sales) {
   var maxQty  = sorted[0] ? sorted[0][1].qty : 1;
   var totalQty = sorted.reduce(function(a,e){return a+e[1].qty;},0);
 
-  var bars = sorted.map(function(e) {
-    var name=e[0], d=e[1];
-    var pct = totalQty ? (d.qty/totalQty*100).toFixed(1) : '0';
-    return '<div style="display:flex;align-items:center;gap:var(--space-3);margin-bottom:var(--space-3)">' +
-      '<div style="width:110px;font-size:12.5px;color:var(--text-primary);font-weight:600;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + name + '</div>' +
-      '<div style="flex:1;height:10px;background:var(--surface-3);border-radius:5px;overflow:hidden">' +
-        '<div style="height:100%;width:' + (d.qty/maxQty*100).toFixed(1) + '%;background:linear-gradient(90deg,var(--brand-600),var(--pink-400));border-radius:5px"></div>' +
-      '</div>' +
-      '<div style="font-size:12px;font-weight:700;width:70px;text-align:right;flex-shrink:0">' + d.qty + ' bdj. <span style="color:var(--text-tertiary);font-weight:400">(' + pct + '%)</span></div>' +
-    '</div>';
-  }).join('');
+  var rows = sorted.map(function(e) {
+    var d = e[1];
+    var pct = totalQty ? (d.qty/totalQty*100).toFixed(1) : '0.0';
+    var bar = '<div class="rpt-bar"><div class="rpt-bar-fill" style="width:' + (maxQty ? (d.qty/maxQty*100).toFixed(1) : 0) + '%"></div></div>' +
+              '<span class="rpt-pct">' + pct.replace('.', ',') + '%</span>';
+    return [esc(e[0]), d.qty, '<div class="rpt-share">' + bar + '</div>', d.count, formatBRL(d.total)];
+  });
+  rows.push({ total: true, cells: ['TOTAL GERAL', totalQty, '<span class="rpt-pct">100%</span>',
+    sumBy(sorted, function(e){return e[1].count;}), formatBRL(sumBy(sorted, function(e){return e[1].total;}))] });
 
-  return '<div class="report-section">' + sectionTitle('Por Sabor') + bars + '</div>';
+  return section('Por Sabor',
+    tbl([{t:'Sabor'},{t:'Bandejas',n:true},{t:'Participação'},{t:'Vendas',n:true},{t:'Total',n:true}], rows),
+    rows.length <= 14);
 }
 
 function renderBySeller(sales) {
@@ -232,26 +274,24 @@ function renderBySeller(sales) {
   });
   var sorted = Object.entries(bySeller).sort(function(a,b){return b[1].total-a[1].total;});
 
-  var cards = sorted.map(function(e,i) {
-    var name=e[0], d=e[1];
+  var rows = sorted.map(function(e) {
+    var d = e[1];
     var ticket = d.qty ? d.total/d.qty : 0;
-    return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-4);box-shadow:var(--shadow-sm);margin-bottom:var(--space-3)">' +
-      '<div style="display:flex;align-items:center;gap:var(--space-3);margin-bottom:var(--space-3)">' +
-        '<div style="width:28px;height:28px;border-radius:50%;background:var(--brand-100);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:var(--brand-700);flex-shrink:0">' + (i+1) + '</div>' +
-        '<div style="font-size:15px;font-weight:700;color:var(--brand-800)">' + name + '</div>' +
-      '</div>' +
-      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--space-2)">' +
-        '<div><div style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--text-tertiary)">Vendas</div><div style="font-weight:700">' + d.qty + '</div></div>' +
-        '<div><div style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--text-tertiary)">Bandejas</div><div style="font-weight:700">' + d.bandejas + '</div></div>' +
-        '<div><div style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--text-tertiary)">Total Vendido</div><div style="font-weight:700">' + formatBRL(d.total) + '</div></div>' +
-        '<div><div style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--text-tertiary)">Ticket Medio</div><div style="font-weight:700">' + formatBRL(ticket) + '</div></div>' +
-        '<div><div style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--text-tertiary)">Recebido</div><div style="font-weight:700;color:var(--success)">' + formatBRL(d.recebido) + '</div></div>' +
-        '<div><div style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--text-tertiary)">Pendente</div><div style="font-weight:700;color:var(--warning)">' + formatBRL(d.total-d.recebido) + '</div></div>' +
-      '</div>' +
-    '</div>';
-  }).join('');
+    return [esc(e[0]), d.qty, d.bandejas, formatBRL(d.total),
+      '<span class="pos">' + formatBRL(d.recebido) + '</span>',
+      '<span class="pend">' + formatBRL(d.total - d.recebido) + '</span>', formatBRL(ticket)];
+  });
+  var tQty = sumBy(sorted, function(e){return e[1].qty;}),
+      tBdj = sumBy(sorted, function(e){return e[1].bandejas;}),
+      tTot = sumBy(sorted, function(e){return e[1].total;}),
+      tRec = sumBy(sorted, function(e){return e[1].recebido;});
+  rows.push({ total: true, cells: ['TOTAL GERAL', tQty, tBdj, formatBRL(tTot),
+    '<span class="pos">' + formatBRL(tRec) + '</span>', '<span class="pend">' + formatBRL(tTot - tRec) + '</span>',
+    formatBRL(tQty ? tTot/tQty : 0)] });
 
-  return '<div class="report-section">' + sectionTitle('Por Vendedor') + cards + '</div>';
+  return section('Por Vendedor',
+    tbl([{t:'Vendedor'},{t:'Vendas',n:true},{t:'Bandejas',n:true},{t:'Total Vendido',n:true},{t:'Recebido',n:true},{t:'Pendente',n:true},{t:'Ticket Médio',n:true}], rows),
+    true);
 }
 
 function renderPayments(sales) {
@@ -260,20 +300,14 @@ function renderPayments(sales) {
   var sumPaid    = paid.reduce(function(a,s){return a+Number(s.amount||0);},0);
   var sumPending = pending.reduce(function(a,s){return a+Number(s.amount||0);},0);
 
-  var pendRows = pending.map(function(s) {
-    return '<div style="background:var(--warning-bg);border:1px solid rgba(180,83,9,.15);border-radius:var(--radius-md);padding:var(--space-3) var(--space-4);margin-bottom:var(--space-2)">' +
-      '<div style="font-size:14px;font-weight:700;margin-bottom:2px">' + s.client_name + '</div>' +
-      '<div style="font-size:12px;color:var(--text-secondary)">' + formatDate(s.sale_date) + ' &bull; ' + s.flavor_name + ' &bull; ' + s.quantity + ' bdj. &bull; <strong>' + formatBRL(s.amount) + '</strong></div>' +
-    '</div>';
-  }).join('');
+  var summary = kpis(
+    kpi('Confirmados', formatBRL(sumPaid) + ' <small>(' + paid.length + ')</small>', 'pos') +
+    kpi('Pendentes', formatBRL(sumPending) + ' <small>(' + pending.length + ')</small>', 'pend'), 2);
 
-  return '<div class="report-section">' + sectionTitle('Pagamentos') +
-    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--space-3);margin-bottom:var(--space-5)">' +
-    card('Confirmados', formatBRL(sumPaid) + ' (' + paid.length + ')', 'var(--success)') +
-    card('Pendentes', formatBRL(sumPending) + ' (' + pending.length + ')', 'var(--warning)') +
-    '</div>' +
-    (pendRows ? sectionTitle('Detalhe das Pendencias') + pendRows : '') +
-  '</div>';
+  var detail = pending.length
+    ? '<div class="rpt-sub">Detalhe das Pendências</div>' + pendingTable(pending)
+    : '';
+  return section('Pagamentos', summary + detail, pending.length <= 12);
 }
 
 function renderExpenses(expenses) {
@@ -282,35 +316,78 @@ function renderExpenses(expenses) {
   var sorted = Object.entries(byCat).sort(function(a,b){return b[1]-a[1];});
   var total = expenses.reduce(function(a,e){return a+Number(e.amount||0);},0);
 
-  var catCards = sorted.map(function(e) { return card(e[0], formatBRL(e[1])); }).join('');
-  var expRows = expenses.map(function(e) {
-    return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-3) var(--space-4);margin-bottom:var(--space-2);display:flex;justify-content:space-between;align-items:center;gap:var(--space-3)">' +
-      '<div>' +
-        '<div style="font-size:13.5px;font-weight:600">' + e.description + '</div>' +
-        '<div style="font-size:12px;color:var(--text-secondary)">' + formatDate(e.expense_date) + ' &bull; ' + e.category + (e.payment_method ? ' &bull; ' + e.payment_method : '') + '</div>' +
-      '</div>' +
-      '<div style="font-size:14px;font-weight:700;color:var(--danger);white-space:nowrap">' + formatBRL(e.amount) + '</div>' +
-    '</div>';
-  }).join('');
+  // Total + categorias em uma faixa compacta de indicadores
+  var strip = kpi('Total de Despesas', formatBRL(total), 'neg') +
+    sorted.map(function(e) { return kpi(esc(e[0]), formatBRL(e[1])); }).join('');
 
-  return '<div class="report-section">' + sectionTitle('Despesas') +
-    card('Total de Despesas', formatBRL(total), 'var(--danger)') +
-    '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:var(--space-2);margin-top:var(--space-4);margin-bottom:var(--space-5)">' + catCards + '</div>' +
-    (expRows ? sectionTitle('Lancamentos') + expRows : '') +
-  '</div>';
+  var expRows = expenses.map(function(e) {
+    return [formatDate(e.expense_date), esc(e.description), esc(e.category), esc(e.payment_method || '—'), formatBRL(e.amount)];
+  });
+
+  return section('Despesas',
+    kpis(strip, Math.min(sorted.length + 1, 5)) +
+    (expRows.length ? '<div class="rpt-sub">Lançamentos</div>' +
+      tbl([{t:'Data'},{t:'Descrição'},{t:'Categoria'},{t:'Forma Pgto.'},{t:'Valor',n:true}], expRows) : ''),
+    expenses.length <= 8);
+}
+
+// ── Impressão ──────────────────────────────────────────────────
+function periodText() {
+  return 'Período: ' + formatDate(lastLoaded.from) + ' a ' + formatDate(lastLoaded.to);
+}
+
+// O rodapé com "Página X de Y" usa caixas de margem do @page (Chrome/Edge 131+).
+// Em outros navegadores aparece um rodapé simples no fim do relatório.
+function marginBoxesSupported() {
+  var m = /(?:Chrome|Chromium|Edg)\/(\d+)/.exec(navigator.userAgent);
+  return !!m && Number(m[1]) >= 131;
+}
+
+function fillPrintTexts() {
+  var gen = new Date().toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
+  var st = document.getElementById('printSubtitle');
+  var pp = document.getElementById('printPeriod');
+  if (st) st.textContent = REPORT_NAMES[lastLoaded.type] || 'Relatório';
+  if (pp) pp.textContent = periodText();
+  var fp = document.getElementById('rptFootPeriod');
+  var fd = document.getElementById('rptFootDate');
+  if (fp) fp.textContent = periodText();
+  if (fd) fd.textContent = 'Gerado em: ' + gen;
+  return gen;
+}
+
+function onBeforePrint() {
+  if (!document.querySelector('.rpt-root')) return;
+  var gen = fillPrintTexts();
+  var mb = marginBoxesSupported();
+  document.documentElement.classList.toggle('rpt-mbox', mb);
+  if (!mb) return;
+  var old = document.getElementById('rptPageStyle');
+  if (old) old.remove();
+  var st = document.createElement('style');
+  st.id = 'rptPageStyle';
+  var box = 'font-family:"Segoe UI",Arial,sans-serif;font-size:7.5pt;color:#7a5560;padding-top:1.6mm;border-top:0.5pt solid #e8c4d0;';
+  st.textContent = '@page report{' +
+    '@bottom-left{content:"Doces & Empadas da Sarah — CRM   |   ' + periodText() + '   |   Gerado em: ' + gen + '";text-align:left;vertical-align:top;' + box + '}' +
+    '@bottom-right{content:"Página " counter(page) " de " counter(pages);text-align:right;vertical-align:top;' + box + '}' +
+  '}';
+  document.head.appendChild(st);
+}
+
+function onAfterPrint() {
+  var st = document.getElementById('rptPageStyle');
+  if (st) st.remove();
+}
+
+function bindPrintHooks() {
+  if (printHooksBound) return;
+  printHooksBound = true;
+  window.addEventListener('beforeprint', onBeforePrint);
+  window.addEventListener('afterprint', onAfterPrint);
 }
 
 function printReport() {
-  var dFrom = document.getElementById('repDateFrom') ? document.getElementById('repDateFrom').value : '';
-  var dTo   = document.getElementById('repDateTo')   ? document.getElementById('repDateTo').value   : '';
-  var names = ['Todos os Relatorios','Valores Totais','Por Cliente','Por Sabor','Por Vendedor','Pagamentos','Despesas'];
-  var hdr = document.getElementById('printHeader');
-  hdr.style.display = 'block';
-  document.getElementById('printSubtitle').textContent = names[currentReportType] || 'Relatorio';
-  document.getElementById('printPeriod').textContent = 'Periodo: ' + formatDate(dFrom) + ' a ' + formatDate(dTo);
-  document.getElementById('printDate').textContent = new Date().toLocaleString('pt-BR');
-  window.print();
-  hdr.style.display = 'none';
+  window.print();   // textos e rodapé são preenchidos em onBeforePrint (também vale para Ctrl+P)
 }
 
 // Conta vendas (pedidos): linhas com o mesmo order_id contam como 1.
